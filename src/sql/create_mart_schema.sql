@@ -56,7 +56,7 @@ CREATE INDEX IF NOT EXISTS d_customer_city_id_ix
 
 CREATE TABLE IF NOT EXISTS mart.d_item (
 	id serial not null primary key,
-	item_id not null unique,
+	item_id int not null unique,
 	item_name varchar(50)
 );
 

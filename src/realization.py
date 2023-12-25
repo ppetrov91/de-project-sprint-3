@@ -8,19 +8,20 @@ from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.hooks.base import BaseHook
 from airflow.models import Variable
+from airflow.utils.task_group import TaskGroup
 from airflow.operators.python import PythonOperator
 from airflow.providers.postgres.operators.postgres import PostgresOperator
 
 
 
 def _get_base_url_headers_from_xcom(ti):
-    return (ti.xcom_pull(key=key, task_ids="t_get_base_url_and_headers") for key in ("headers", "base_url"))
+    return (ti.xcom_pull(key=key, task_ids="get_data_from_api_group.t_get_base_url_and_headers") for key in ("headers", "base_url"))
 
 
 def get_report_info(ti):
     # Get headers, base_url and task_id from xcom
     headers, base_url = _get_base_url_headers_from_xcom(ti)
-    task_id = ti.xcom_pull(key="task_id", task_ids="t_create_task_for_report_generation")
+    task_id = ti.xcom_pull(key="task_id", task_ids="get_data_from_api_group.t_create_task_for_report_generation")
     report_id, api = None, "get_report"
     
     '''
@@ -102,21 +103,27 @@ with DAG(dag_id="sales_mart",
          schedule_interval="0 0 * * *",
          start_date=datetime(2021, 1, 1),
         ) as dag:
-    t_get_base_url_and_headers = PythonOperator(
-                                    task_id="t_get_base_url_and_headers",
-                                    python_callable=get_base_url_and_headers
-                                )
-    
-    t_create_task_for_report_generation = PythonOperator(
-                                            task_id="t_create_task_for_report_generation",
-                                            python_callable=create_task_for_report_generation
-                                          )
 
-    t_get_report_info = PythonOperator(
-        task_id="t_get_report_info",
-        python_callable=get_report_info
-    )
+    with TaskGroup("schema_creation_group") as schema_creation_group:
+        cr_schema_lst = [PostgresOperator(
+                          task_id=f"create_{name}_schema",
+                          postgres_conn_id='postgresql_de',
+                          sql=f"sql/create_{name}_schema.sql"
+                         ) 
+                         for name in ("staging", "mart", "utils")]
+        
+        cr_schema_lst
 
-    t_get_base_url_and_headers >> t_create_task_for_report_generation >> t_get_report_info
+    with TaskGroup("get_data_from_api_group") as get_data_from_api_group:
+        d = {
+            "t_get_base_url_and_headers": get_base_url_and_headers,
+            "t_create_task_for_report_generation": create_task_for_report_generation,
+            "t_get_report_info": get_report_info
+        }
+
+        ag_lst = [PythonOperator(task_id=k, python_callable=v) for k, v in d.items()]
+        ag_lst[0] >> ag_lst[1] >> ag_lst[2]
+
+    schema_creation_group >> get_data_from_api_group
 
 #business_dt = "{{ ds }}"
