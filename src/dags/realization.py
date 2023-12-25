@@ -1,6 +1,7 @@
 import requests
 import json
 import pandas as pd
+import os
 import time
 
 
@@ -18,7 +19,21 @@ def _get_base_url_headers_from_xcom(ti):
     return (ti.xcom_pull(key=key, task_ids="get_data_from_api_group.t_get_base_url_and_headers") for key in ("headers", "base_url"))
 
 
-def get_report_info(ti):
+def _get_increment(base_url, headers, report_id, dt):
+    print(f'{base_url}/get_increment?report_id={report_id}&date={dt}T00:00:00', headers, sep="\n")
+
+    response = requests.get(f'{base_url}/get_increment?report_id={report_id}&date={dt}T00:00:00', headers=headers)
+    response.raise_for_status()
+    rc = json.loads(response.content)
+    status = rc["status"]
+
+    if status == "SUCCESS":
+        return status, rc["data"]["s3_path"]
+    
+    return status, None
+
+
+def get_report_info(ti, dt=None):
     # Get headers, base_url and task_id from xcom
     headers, base_url = _get_base_url_headers_from_xcom(ti)
     task_id = ti.xcom_pull(key="task_id", task_ids="get_data_from_api_group.t_create_task_for_report_generation")
@@ -35,12 +50,13 @@ def get_report_info(ti):
         response = requests.get(f"{base_url}/{api}?task_id={task_id}", headers=headers)
         print(f"Stop making {i} request to {api}")
         response.raise_for_status()
-        status = json.loads(response.content)["status"]
+        rc = json.loads(response.content)
+        status = rc["status"]
         print(f"{i} request status: {status}")
 
-        if status == 'SUCCESS':
-            report_id = json.loads(response.content)['data']['report_id']
-            s3_path = json.loads(response.content)['data']['s3_path']
+        if status == "SUCCESS":
+            report_id = rc["data"]["report_id"]
+            s3_path = rc["data"]["s3_path"]
             break
 
         time.sleep(10)
@@ -48,8 +64,14 @@ def get_report_info(ti):
     if not report_id:
         raise TimeoutError()
 
-    ti.xcom_push(key='report_id', value=report_id)
-    ti.xcom_push(key='s3_path', value=s3_path)
+    # If dt was specified then we need to save information about increment
+    if dt is not None and dt != "":
+        status, inc_data = _get_increment(base_url, headers, report_id, dt)
+
+    ti.xcom_push(key="report_id", value=report_id)
+    ti.xcom_push(key="s3_path", value=s3_path)
+    ti.xcom_push(key="resp_status", value=status)   
+    ti.xcom_push(key="inc_s3_path", value=inc_data)
 
 
 def create_task_for_report_generation(ti):
@@ -96,6 +118,9 @@ args = {
     "retries": 0
 }
 
+business_dt = "2023-12-18"
+#business_dt = "{{ ds }}"
+
 with DAG(dag_id="sales_mart",
          default_args=args,
          description="Project for sprint3",
@@ -104,26 +129,18 @@ with DAG(dag_id="sales_mart",
          start_date=datetime(2021, 1, 1),
         ) as dag:
 
-    with TaskGroup("schema_creation_group") as schema_creation_group:
-        cr_schema_lst = [PostgresOperator(
-                          task_id=f"t_create_{name}_schema",
-                          postgres_conn_id='postgresql_de',
-                          sql=f"sql/create_{name}_schema.sql"
-                         ) 
-                         for name in ("staging", "mart", "utils")]
-        
-        cr_schema_lst[0] >> cr_schema_lst[1] >> cr_schema_lst[2]
 
     with TaskGroup("get_data_from_api_group") as get_data_from_api_group:
-        d = {
-            "t_get_base_url_and_headers": get_base_url_and_headers,
-            "t_create_task_for_report_generation": create_task_for_report_generation,
-            "t_get_report_info": get_report_info
-        }
+        t_get_base_url_and_headers = PythonOperator(task_id="t_get_base_url_and_headers", 
+                                                    python_callable=get_base_url_and_headers)
 
-        ag_lst = [PythonOperator(task_id=k, python_callable=v) for k, v in d.items()]
-        ag_lst[0] >> ag_lst[1] >> ag_lst[2]
+        t_create_task_for_report_generation = PythonOperator(task_id="t_create_task_for_report_generation", 
+                                                             python_callable=create_task_for_report_generation)
 
-    schema_creation_group >> get_data_from_api_group
+        t_get_report_info = PythonOperator(task_id="t_get_report_info", 
+                                           python_callable=get_report_info,
+                                           op_kwargs={"dt": business_dt})
+        
+        t_get_base_url_and_headers >> t_create_task_for_report_generation >> t_get_report_info
 
-#business_dt = "{{ ds }}"
+    get_data_from_api_group
