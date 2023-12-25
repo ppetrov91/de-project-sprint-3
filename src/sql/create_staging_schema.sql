@@ -58,8 +58,8 @@ CREATE INDEX IF NOT EXISTS uol_date_time_ix
     ON staging.user_order_log(date_time);
 
 CREATE OR REPLACE FUNCTION staging.start_staging_load(p_obj_name VARCHAR(30),
-											          OUT batch_id bigint, 
-											          OUT load_status VARCHAR(8)) AS
+						      OUT batch_id bigint, 
+						      OUT load_status VARCHAR(8)) AS
 $$
 BEGIN
   SELECT lh.id
@@ -90,7 +90,7 @@ $$
 LANGUAGE plpgsql;
 
 CREATE OR REPLACE PROCEDURE staging.finish_staging_load(p_id bigint,
-													    p_status VARCHAR(12)) AS
+							p_status VARCHAR(12)) AS
 $$
 DECLARE
   v_file_name VARCHAR(30);
