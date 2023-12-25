@@ -288,7 +288,7 @@ BEGIN
        , uol.status
     FROM staging.user_order_log uol
     LEFT JOIN mart.d_calendar cl
-      ON cl.date_actual = uol.date_time
+      ON cl.date_actual = uol.date_time::date
    WHERE (p_date IS NULL OR uol.date_time = p_date);
 
   ANALYZE mart.f_daily_sales;
