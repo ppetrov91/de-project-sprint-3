@@ -106,13 +106,13 @@ with DAG(dag_id="sales_mart",
 
     with TaskGroup("schema_creation_group") as schema_creation_group:
         cr_schema_lst = [PostgresOperator(
-                          task_id=f"create_{name}_schema",
+                          task_id=f"t_create_{name}_schema",
                           postgres_conn_id='postgresql_de',
                           sql=f"sql/create_{name}_schema.sql"
                          ) 
                          for name in ("staging", "mart", "utils")]
         
-        cr_schema_lst
+        cr_schema_lst[0] >> cr_schema_lst[1] >> cr_schema_lst[2]
 
     with TaskGroup("get_data_from_api_group") as get_data_from_api_group:
         d = {

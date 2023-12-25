@@ -3,8 +3,7 @@ CREATE SCHEMA IF NOT EXISTS utils;
 CREATE OR REPLACE PROCEDURE utils.add_column(p_schema text, 
                                              p_table text,
                                              p_col_name text, 
-                                             p_col_type text, 
-                                             p_val text) AS
+                                             p_col_type text) AS
 $$
 DECLARE
   v_rec RECORD;
@@ -31,3 +30,8 @@ BEGIN
 END;
 $$
 LANGUAGE plpgsql;
+
+BEGIN;
+  CALL utils.add_column('staging', 'user_order_log', 'status', 'varchar(10)');
+  CALL utils.add_column('mart', 'user_order_log', 'status', 'varchar(10)');
+COMMIT;
