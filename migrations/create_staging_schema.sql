@@ -4,8 +4,8 @@ CREATE TABLE IF NOT EXISTS staging.load_staging_history (
     id BIGSERIAL PRIMARY KEY,
     start_load TIMESTAMP,
     finish_load TIMESTAMP,
-    file_name VARCHAR(30),
-    status VARCHAR(12) CHECK (status IN ('success', 'in_progress', 'failed')),
+    file_name VARCHAR(32),
+    status VARCHAR(12) CHECK (status IN ('success', 'in_progress', 'not_found', 'failed')),
     CONSTRAINT load_staging_history_file_name_ukey UNIQUE (file_name)
 );
 
@@ -92,19 +92,9 @@ LANGUAGE plpgsql;
 CREATE OR REPLACE PROCEDURE staging.finish_staging_load(p_id bigint,
 							p_status VARCHAR(12)) AS
 $$
-DECLARE
-  v_file_name VARCHAR(30);
-BEGIN
-  UPDATE staging.load_staging_history lh
-     SET finish_load = current_timestamp
-       , status = p_status
-   WHERE lh.id = p_id
-  RETURNING file_name INTO v_file_name;
-
-  IF p_status = 'success' THEN
-    INSERT INTO staging.load_mart_history(start_load, file_name, status)
-    VALUES (current_timestamp, v_file_name, 'in_progress');
-  END IF;
-END
+UPDATE staging.load_staging_history lh
+   SET finish_load = current_timestamp
+     , status = p_status
+ WHERE lh.id = p_id;
 $$
-LANGUAGE plpgsql;
+LANGUAGE sql;
