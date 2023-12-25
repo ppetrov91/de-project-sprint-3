@@ -263,7 +263,7 @@ END
 $$
 LANGUAGE plpgsql;
 
-CREATE OR REPLACE PROCEDURE mart.update_f_daily_sales(p_date timestamp DEFAULT NULL)
+CREATE OR REPLACE PROCEDURE mart.update_f_sales(p_date timestamp DEFAULT NULL)
 AS
 $$
 BEGIN
@@ -291,7 +291,7 @@ BEGIN
       ON cl.date_actual = uol.date_time::date
    WHERE (p_date IS NULL OR uol.date_time = p_date);
 
-  ANALYZE mart.f_daily_sales;
+  ANALYZE mart.f_sales;
 END
 $$
 LANGUAGE plpgsql;
