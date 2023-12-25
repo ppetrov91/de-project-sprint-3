@@ -62,14 +62,19 @@ CREATE TABLE IF NOT EXISTS mart.d_item (
 
 CREATE TABLE IF NOT EXISTS mart.f_activity (
 	id serial primary key,
-	activity_id int,
+	action_id int,
 	date_id int,
-	click_number bigint,
-	CONSTRAINT f_activity_date_id_fk FOREIGN KEY (date_id) REFERENCES mart.d_calendar(date_id)
+	customer_id int,
+	quantity bigint,
+	CONSTRAINT f_activity_date_id_fk FOREIGN KEY (date_id) REFERENCES mart.d_calendar(date_id),
+	CONSTRAINT f_activity_customer_id_fk FOREIGN KEY (customer_id) REFERENCES mart.d_customer(customer_id)
 );
 
 CREATE INDEX IF NOT EXISTS f_activity_date_id_ix
     ON mart.f_activity(date_id);
+
+CREATE INDEX IF NOT EXISTS f_activity_customer_id_ix
+    ON mart.f_activity(customer_id);
 
 CREATE TABLE IF NOT EXISTS mart.f_sales (
 	id serial primary key,
@@ -239,25 +244,19 @@ CREATE OR REPLACE PROCEDURE mart.update_f_activity(p_date timestamp DEFAULT NULL
 AS
 $$
 BEGIN
-  WITH ual AS (
   /*
    * If p_date is null then grab all data from staging.user_activity_log.
    * It is required for full load, but for incremental load we can use date_time.
    */
-  SELECT ual.action_id
-       , ual.date_time
-       , SUM(ual.quantity) AS click_number
-    FROM staging.user_activity_log ual
-   WHERE (p_date IS NULL OR ual.date_time = p_date)
-   GROUP BY ual.action_id, ual.date_time
-  )
-  INSERT INTO mart.f_activity (activity_id, date_id, click_number)
+  INSERT INTO mart.f_activity(action_id, date_id, customer_id, quantity)
   SELECT ual.action_id
        , cl.date_id
-       , ual.click_number
-    FROM ual
+       , ual.customer_id
+       , ual.quantity
+    FROM staging.user_activity_log ual
     LEFT JOIN mart.d_calendar cl
-      ON cl.date_actual = ual.date_time;
+      ON cl.date_actual = ual.date_time::date
+   WHERE (p_date IS NULL OR ual.date_time = p_date);
 
   ANALYZE mart.f_activity;
 END
@@ -271,32 +270,26 @@ BEGIN
   /*
    * If p_date is null then grab all data from staging.user_order_log.
    * It is required for full load, but for incremental load we can use date_time.
+   *
+   * Also status field must be saved from staging
    */
-  WITH uol AS ( 
-  SELECT uol.date_time
-       , uol.item_id
-       , uol.customer_id
-       , uol.city_id
-       , SUM(uol.quantity) AS quantity
-       
-       , SUM(CASE 
-       	       WHEN COALESCE(uol.status, 'shipped') = 'shipped' THEN 1 
-       	       ELSE -1 
-       	     END * uol.payment_amount) AS payment_amount
-    FROM staging.user_order_log uol
-   WHERE (p_date IS NULL OR uol.date_time = p_date) 
-   GROUP BY uol.date_time, uol.item_id, uol.customer_id, uol.city_id
-  )
-  INSERT INTO mart.f_daily_sales (date_id, item_id, customer_id, city_id, quantity, payment_amount)
+  INSERT INTO mart.f_sales(date_id, item_id, customer_id, city_id, quantity, payment_amount, status)
   SELECT cl.date_id
        , uol.item_id
        , uol.customer_id
        , uol.city_id
        , uol.quantity
-       , uol.payment_amount
-    FROM uol
+       
+       , CASE 
+       	   WHEN COALESCE(uol.status, 'shipped') = 'shipped' THEN 1 
+       	   ELSE -1 
+       	 END * uol.payment_amount AS payment_amount
+
+       , uol.status
+    FROM staging.user_order_log uol
     LEFT JOIN mart.d_calendar cl
-      ON cl.date_actual = uol.date_time;
+      ON cl.date_actual = uol.date_time
+   WHERE (p_date IS NULL OR uol.date_time = p_date);
 
   ANALYZE mart.f_daily_sales;
 END
