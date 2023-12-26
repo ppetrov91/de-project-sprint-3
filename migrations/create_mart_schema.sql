@@ -39,7 +39,9 @@ CREATE INDEX IF NOT EXISTS d_date_date_actual_idx
 CREATE TABLE IF NOT EXISTS mart.d_city (
 	id serial not null primary key,
 	city_id int UNIQUE,
-	city_name varchar(50)
+	city_name varchar(50),
+    created_at timestamp,
+    updated_at timestamp
 );
 
 CREATE TABLE IF NOT EXISTS mart.d_customer (
@@ -48,6 +50,8 @@ CREATE TABLE IF NOT EXISTS mart.d_customer (
 	first_name varchar(15),
 	last_name varchar(15),
     city_id int,
+    created_at timestamp,
+    updated_at timestamp,
 	CONSTRAINT d_customer_city_id_fkey FOREIGN KEY (city_id) REFERENCES mart.d_city(id)
 );
 
@@ -57,7 +61,9 @@ CREATE INDEX IF NOT EXISTS d_customer_city_id_ix
 CREATE TABLE IF NOT EXISTS mart.d_item (
 	id serial not null primary key,
 	item_id int not null unique,
-	item_name varchar(50)
+	item_name varchar(50),
+    created_at timestamp,
+    updated_at timestamp
 );
 
 CREATE TABLE IF NOT EXISTS mart.f_activity (
@@ -102,49 +108,41 @@ CREATE INDEX IF NOT EXISTS f_sales_customer_id_ix
 CREATE INDEX IF NOT EXISTS f_sales_city_id_ix 
     ON mart.f_sales(city_id);
 
-CREATE OR REPLACE PROCEDURE mart.update_d_city(p_date timestamp DEFAULT NULL)
+CREATE OR REPLACE PROCEDURE mart.update_d_city(p_dt1 timestamp, p_dt2 timestamp)
 AS
 $$
 BEGIN
-  /*
-   * If p_date is null then grab all data from staging.user_order_log.
-   * It is required for full load, but for incremental load we can use date_time.
-   */
-  INSERT INTO mart.d_city(city_id, city_name)
-  SELECT DISTINCT uol.city_id
-       , uol.city_name
-    FROM staging.user_order_log uol
-   WHERE (p_date IS NULL OR uol.date_time = p_date)
-      ON CONFLICT (city_id) DO NOTHING;
-
-  ANALYZE mart.d_city;
-END
-$$
-LANGUAGE plpgsql;
-
-CREATE OR REPLACE PROCEDURE mart.update_d_customer(p_date timestamp DEFAULT NULL)
-AS
-$$
-BEGIN
-  /*
-   * If p_date is null then grab all data from staging.user_order_log.
-   * It is required for full load, but for incremental load we can use date_time.
-   */
+  /* Grab data by latest date_time. If it is not present in table insert it.
+   * Or we must update it but only in case of difference in data and date_time > updated_at or
+   * date_time > created_at in case of updated_at IS NULL   
+   */  
   WITH ds AS (
-  SELECT uol.customer_id
-       , uol.first_name
-       , uol.last_name
-       , MAX(uol.city_id) AS city_id
+  SELECT uol.city_id
+       , uol.city_name
+       , uol.date_time
+       , ROW_NUMBER() OVER(PARTITION BY uol.city_id ORDER BY uol.date_time DESC) AS rn
     FROM staging.user_order_log uol
-   WHERE (p_date IS NULL OR uol.date_time = p_date)
-   GROUP BY uol.customer_id, uol.first_name, uol.last_name
+   WHERE uol.date_time BETWEEN p_dt1 AND p_dt2
   )
-  INSERT INTO mart.d_customer(customer_id, first_name, last_name, city_id)
-  SELECT d.*
+  INSERT INTO mart.d_city AS c
+  SELECT nextval('mart.d_city_id_seq') AS id
+       , d.city_id
+       , d.city_name
+       , d.date_time AS created_at
+       , NULL AS updated_at
     FROM ds d
-      ON CONFLICT (customer_id) DO NOTHING;
+   WHERE d.rn = 1
+      ON CONFLICT (city_id)
+      DO UPDATE
+            SET city_name = EXCLUDED.city_name
+              , updated_at = EXCLUDED.created_at
+          WHERE c.city_id = EXCLUDED.city_id
+            AND COALESCE(c.city_name, '-1') != COALESCE(EXCLUDED.city_name, '-1')
+            AND ((c.updated_at IS NULL AND c.created_at < EXCLUDED.created_at) OR 
+                  c.updated_at < EXCLUDED.created_at
+                );
 
-  ANALYZE mart.d_customer;
+   ANALYZE mart.d_city;
 END
 $$
 LANGUAGE plpgsql;
@@ -153,47 +151,112 @@ CREATE OR REPLACE PROCEDURE mart.update_d_item(p_date timestamp DEFAULT NULL)
 AS
 $$
 BEGIN
-  /*
-   * If p_date is null then grab all data from staging.user_order_log.
-   * It is required for full load, but for incremental load we can use date_time.
-   */
-  INSERT INTO mart.d_item(item_id, item_name)
-  SELECT DISTINCT uol.item_id
+  /* Grab data by latest date_time. If it is not present in table insert it.
+   * Or we must update it but only in case of difference in data and date_time > updated_at or
+   * date_time > created_at in case of updated_at IS NULL   
+   */ 
+  WITH ds AS (
+  SELECT uol.item_id
        , uol.item_name
+       , uol.date_time
+       , ROW_NUMBER() OVER(PARTITION BY uol.item_id ORDER BY uol.date_time DESC) AS rn
     FROM staging.user_order_log uol
-   WHERE (p_date IS NULL OR uol.date_time = p_date)
-      ON CONFLICT (item_id) DO NOTHING;
+   WHERE uol.date_time BETWEEN p_dt1 AND p_dt2
+  )
+  INSERT INTO mart.d_item AS c
+  SELECT nextval('mart.d_item_id_seq') AS id
+       , d.item_id
+       , d.item_name
+       , d.date_time AS created_at
+       , NULL AS updated_at
+    FROM ds d
+   WHERE d.rn = 1
+      ON CONFLICT (item_id)
+      DO UPDATE
+            SET item_name = EXCLUDED.item_name
+              , updated_at = EXCLUDED.created_at
+          WHERE c.item_id = EXCLUDED.item_id
+            AND COALESCE(c.item_name, '-1') != COALESCE(EXCLUDED.item_name, '-1')
+            AND ((c.updated_at IS NULL AND c.created_at < EXCLUDED.created_at) OR 
+                  c.updated_at < EXCLUDED.created_at
+                );
 
   ANALYZE mart.d_item;
 END
 $$
 LANGUAGE plpgsql;
 
-CREATE OR REPLACE PROCEDURE mart.update_d_calendar(p_date timestamp DEFAULT NULL)
+CREATE OR REPLACE PROCEDURE mart.update_d_customer(p_dt1 timestamp, p_dt2 timestamp)
 AS
 $$
 BEGIN
-  /*
-   * If p_date is null then grab all data from staging.user_order_log, 
-        staging.user_activity_log and staging.customer_research.
-   * It is required for full load, but for incremental load we can use date_time.
-   */
+  /* Grab data by latest date_time. If it is not present in table insert it.
+   * Or we must update it but only in case of difference in data and date_time > updated_at or
+   * date_time > created_at in case of updated_at IS NULL   
+   */ 
+  WITH ds AS (
+  SELECT uol.customer_id
+       , uol.first_name
+       , uol.last_name
+       , uol.city_id
+       , uol.date_time
+       , ROW_NUMBER() OVER(PARTITION BY uol.customer_id ORDER BY uol.date_time DESC) AS rn
+    FROM staging.user_order_log uol
+   WHERE uol.date_time BETWEEN p_dt1 AND p_dt2
+  )
+  INSERT INTO mart.d_customer AS c
+  SELECT nextval('mart.d_customer_id_seq') AS id
+       , d.customer_id
+       , d.first_name
+       , d.last_name
+       , c.id AS city_id
+       , d.date_time AS created_at
+       , NULL AS updated_at
+    FROM ds d
+    LEFT JOIN mart.d_city c
+      ON c.city_id = d.city_id 
+   WHERE d.rn = 1
+      ON CONFLICT (customer_id)
+      DO UPDATE
+            SET first_name = EXCLUDED.first_name
+              , last_name = EXCLUDED.last_name
+              , city_id = EXCLUDED.city_id
+              , updated_at = EXCLUDED.created_at
+          WHERE c.customer_id = EXCLUDED.customer_id
+            AND (COALESCE(c.first_name, '-1') != COALESCE(EXCLUDED.first_name, '-1') OR
+                 COALESCE(c.last_name, '-1') != COALESCE(EXCLUDED.last_name, '-1') OR
+                 COALESCE(c.city_id, -1) != COALESCE(EXCLUDED.city_id, -1)
+                )
+            AND ((c.updated_at IS NULL AND c.created_at < EXCLUDED.created_at) OR 
+                  c.updated_at < EXCLUDED.created_at
+                );
+
+   ANALYZE mart.d_customer;
+END
+$$
+LANGUAGE plpgsql;
+
+CREATE OR REPLACE PROCEDURE mart.update_d_calendar(p_dt1 timestamp, p_dt2 timestamp)
+AS
+$$
+BEGIN
+  /*Dates can not be changed so do nothing if we have primary key conflict*/
   WITH ds AS (
   SELECT cr.date_id::date AS dt
     FROM staging.customer_research cr
-   WHERE (p_date IS NULL OR cr.date_id = p_date)
+   WHERE cr.date_id BETWEEN p_dt1 AND p_dt2
 
    UNION
 
   SELECT uol.date_time::date
     FROM staging.user_order_log uol
-   WHERE (p_date IS NULL OR uol.date_time = p_date)
+   WHERE uol.date_time BETWEEN p_dt1 AND p_dt2
 
    UNION
 
   SELECT ual.date_time::date
     FROM staging.user_activity_log ual
-   WHERE (p_date IS NULL OR ual.date_time = p_date)  
+   WHERE ual.date_time BETWEEN p_dt1 AND p_dt2
   )
   INSERT INTO mart.d_calendar
   SELECT REPLACE(c.dt::text, '-', '')::int AS date_id
