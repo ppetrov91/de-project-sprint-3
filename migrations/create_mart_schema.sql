@@ -40,8 +40,8 @@ CREATE TABLE IF NOT EXISTS mart.d_city (
 	id serial not null primary key,
 	city_id int UNIQUE,
 	city_name varchar(50),
-    created_at timestamp,
-    updated_at timestamp
+    	created_at timestamp,
+    	updated_at timestamp
 );
 
 CREATE TABLE IF NOT EXISTS mart.d_customer (
@@ -49,9 +49,9 @@ CREATE TABLE IF NOT EXISTS mart.d_customer (
 	customer_id int not null UNIQUE,
 	first_name varchar(15),
 	last_name varchar(15),
-    city_id int,
-    created_at timestamp,
-    updated_at timestamp,
+    	city_id int,
+    	created_at timestamp,
+    	updated_at timestamp,
 	CONSTRAINT d_customer_city_id_fkey FOREIGN KEY (city_id) REFERENCES mart.d_city(id)
 );
 
@@ -62,8 +62,8 @@ CREATE TABLE IF NOT EXISTS mart.d_item (
 	id serial not null primary key,
 	item_id int not null unique,
 	item_name varchar(50),
-    created_at timestamp,
-    updated_at timestamp
+    	created_at timestamp,
+    	updated_at timestamp
 );
 
 CREATE TABLE IF NOT EXISTS mart.f_activity (
