@@ -147,7 +147,7 @@ END
 $$
 LANGUAGE plpgsql;
 
-CREATE OR REPLACE PROCEDURE mart.update_d_item(p_date timestamp DEFAULT NULL)
+CREATE OR REPLACE PROCEDURE mart.update_d_item(p_dt1 timestamp, p_dt2 timestamp)
 AS
 $$
 BEGIN
