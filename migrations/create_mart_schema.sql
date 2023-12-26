@@ -303,46 +303,58 @@ END
 $$
 LANGUAGE plpgsql;
 
-CREATE OR REPLACE PROCEDURE mart.update_f_activity(p_date timestamp DEFAULT NULL)
+CREATE OR REPLACE PROCEDURE mart.update_f_activity(p_dt1 timestamp, p_dt2 timestamp)
 AS
 $$
 BEGIN
   /*
-   * If p_date is null then grab all data from staging.user_activity_log.
-   * It is required for full load, but for incremental load we can use date_time.
+   * Clear data before recalculation
    */
+  DELETE
+    FROM mart.f_activity f
+   WHERE EXISTS (SELECT 1
+                   FROM mart.d_calendar d
+                  WHERE d.date_id = f.date_id
+                    AND d.date_actual BETWEEN p_dt1::date AND p_dt2::date
+                );
+
   INSERT INTO mart.f_activity(action_id, date_id, customer_id, quantity)
   SELECT ual.action_id
        , cl.date_id
        , ual.customer_id
-       , ual.quantity
+       , MAX(ual.quantity) AS quantity
     FROM staging.user_activity_log ual
     LEFT JOIN mart.d_calendar cl
       ON cl.date_actual = ual.date_time::date
-   WHERE (p_date IS NULL OR ual.date_time = p_date);
+   WHERE ual.date_time BETWEEN p_dt1 AND p_dt2;
 
   ANALYZE mart.f_activity;
 END
 $$
 LANGUAGE plpgsql;
 
-CREATE OR REPLACE PROCEDURE mart.update_f_sales(p_date timestamp DEFAULT NULL)
+CREATE OR REPLACE PROCEDURE mart.update_f_sales(p_dt1 timestamp, p_dt2 timestamp)
 AS
 $$
 BEGIN
   /*
-   * If p_date is null then grab all data from staging.user_order_log.
-   * It is required for full load, but for incremental load we can use date_time.
-   *
-   * Also status field must be saved from staging
+   * Clear data before recalculation
    */
+  DELETE
+    FROM mart.f_sales f
+   WHERE EXISTS (SELECT 1
+                   FROM mart.d_calendar d
+                  WHERE d.date_id = f.date_id
+                    AND d.date_actual BETWEEN p_dt1::date AND p_dt2::date
+                );
+                 
   INSERT INTO mart.f_sales(date_id, item_id, customer_id, city_id, quantity, payment_amount, status)
   SELECT cl.date_id
        , uol.item_id
        , uol.customer_id
        , uol.city_id
        , uol.quantity
-       
+
        , CASE 
        	   WHEN COALESCE(uol.status, 'shipped') = 'shipped' THEN 1 
        	   ELSE -1 
@@ -352,7 +364,7 @@ BEGIN
     FROM staging.user_order_log uol
     LEFT JOIN mart.d_calendar cl
       ON cl.date_actual = uol.date_time::date
-   WHERE (p_date IS NULL OR uol.date_time = p_date);
+   WHERE uol.date_time BETWEEN p_dt1 AND p_dt2;
 
   ANALYZE mart.f_sales;
 END
