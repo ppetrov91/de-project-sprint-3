@@ -6,10 +6,14 @@ CREATE TABLE IF NOT EXISTS staging.load_staging_history (
     finish_load TIMESTAMP,
     min_date TIMESTAMP,
     max_date TIMESTAMP,
+    file_dt TIMESTAMP,
     file_name VARCHAR(32),
     status VARCHAR(12) CHECK (status IN ('success', 'in_progress', 'not_found', 'failed')),
     CONSTRAINT load_staging_history_file_name_ukey UNIQUE (file_name)
 );
+
+CREATE INDEX IF NOT EXISTS load_staging_history_file_dt_ix
+    ON staging.load_staging_history(file_dt);
 
 CREATE TABLE IF NOT EXISTS staging.customer_research (
     date_id timestamp,
@@ -50,11 +54,13 @@ CREATE TABLE IF NOT EXISTS staging.user_order_log (
 CREATE INDEX IF NOT EXISTS uol_date_time_ix
     ON staging.user_order_log(date_time);
 
-CREATE OR REPLACE PROCEDURE staging.start_staging_load(p_file_name VARCHAR(32)) AS
+CREATE OR REPLACE PROCEDURE staging.start_staging_load(p_file_dt VARCHAR(10), 
+                            p_file_name VARCHAR(32)) AS
 $$
 INSERT INTO staging.load_staging_history AS lsh
 VALUES (nextval('staging.load_staging_history_id_seq'), current_timestamp, NULL, 
-        NULL, NULL, p_file_name, 'in_progress')
+        NULL, NULL, COALESCE(NULLIF(TRIM(p_file_dt), '')::timestamp, '0001-01-01'::timestamp), 
+        p_file_name, 'in_progress')
     ON CONFLICT (file_name)
     DO UPDATE
           SET start_load = EXCLUDED.start_load

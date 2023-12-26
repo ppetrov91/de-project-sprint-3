@@ -377,3 +377,28 @@ BEGIN
 END
 $$
 LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION mart.get_staging_load_dates_status(p_file_dt VARCHAR(10),
+                           OUT p_dt1 timestamp, OUT p_dt2 timestamp, OUT p_is_success int)
+AS
+$$
+DECLARE
+  v_dt timestamp := COALESCE(NULLIF(TRIM(p_file_dt), '')::timestamp, '0001-01-01'::timestamp);
+  v_non_success_cnt int;
+BEGIN
+  SELECT MIN(lsh.min_date) AS min_date
+       , MAX(lsh.max_date) AS max_date
+       , COUNT(1) FILTER(WHERE lsh.status != 'success') AS non_success_cnt
+    INTO p_dt1, p_dt2, v_non_success_cnt   
+    FROM staging.load_staging_history lsh
+   WHERE lsh.file_dt = v_dt;
+
+   IF p_dt1 IS NULL OR v_non_success_cnt > 0 THEN
+     p_is_success := 0;
+     RETURN;
+   END IF;
+
+   p_is_success := 1;
+END
+$$
+LANGUAGE plpgsql;

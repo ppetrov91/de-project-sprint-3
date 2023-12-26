@@ -13,7 +13,6 @@ from airflow.models import Variable
 from airflow.utils.task_group import TaskGroup
 from airflow.operators.empty import EmptyOperator
 from airflow.operators.python import PythonOperator
-from airflow.providers.postgres.operators.postgres import PostgresOperator
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 
 
@@ -21,7 +20,7 @@ def _get_base_url_headers_from_xcom(ti):
     '''
     Get headers and base_url from xcom for performing GET and POST requests
     '''
-    return (ti.xcom_pull(key=key, task_ids="get_data_from_api_group.t_get_base_url_and_headers") for key in ("headers", "base_url"))
+    return (ti.xcom_pull(key=key, task_ids="download_data_to_staging.t_get_base_url_and_headers") for key in ("headers", "base_url"))
 
 
 def _get_increment(base_url, headers, report_id, dt):
@@ -72,7 +71,7 @@ def _download_file(ti, key_for_s3_path, key_for_url, staging_folder, filename):
     '''
     Download data file from the source system and return local filepath where data was downloaded
     '''
-    s3_path = ti.xcom_pull(key=key_for_s3_path, task_ids="get_data_from_api_group.t_get_report_info")
+    s3_path = ti.xcom_pull(key=key_for_s3_path, task_ids="download_data_to_staging.t_get_report_info")
     url, download_path = s3_path[key_for_url], os.path.join(staging_folder, filename)
 
     response = requests.get(url)
@@ -124,7 +123,7 @@ def upload_data_to_staging(ti, object_name, dt, extra_columns, unique_columns, a
     _start_staging_load(file_name)
 
     # If data was not found then update status in database and exit
-    resp_status = ti.xcom_pull(key="resp_status", task_ids="get_data_from_api_group.t_get_report_info")
+    resp_status = ti.xcom_pull(key="resp_status", task_ids="download_data_to_staging.t_get_report_info")
     if resp_status != "SUCCESS":
         _finish_staging_load(file_name, ("failed", "not_found")[resp_status == "NOT FOUND"])
         return
@@ -150,7 +149,7 @@ def get_report_info(ti, dt=None):
 
     # Get headers, base_url and task_id from xcom
     headers, base_url = _get_base_url_headers_from_xcom(ti)
-    task_id = ti.xcom_pull(key="task_id", task_ids="get_data_from_api_group.t_create_task_for_report_generation")
+    task_id = ti.xcom_pull(key="task_id", task_ids="download_data_to_staging.t_create_task_for_report_generation")
     report_id, inc_data, api = None, None, "get_report"
     
     '''
@@ -241,7 +240,7 @@ args = {
 }
 
 
-business_dt = "2023-12-23"
+business_dt = "2023-12-19"
 staging_schema = "staging"
 
 with DAG(dag_id="sales_mart",
@@ -253,7 +252,7 @@ with DAG(dag_id="sales_mart",
         ) as dag:
 
 
-    with TaskGroup("get_data_from_api_group") as get_data_from_api_group:
+    with TaskGroup("download_data_to_staging") as download_data_to_staging:
         t_get_base_url_and_headers = PythonOperator(task_id="t_get_base_url_and_headers", 
                                                     python_callable=get_base_url_and_headers)
 
@@ -306,4 +305,4 @@ with DAG(dag_id="sales_mart",
         t_get_base_url_and_headers >> t_create_task_for_report_generation >> t_get_report_info
         t_get_report_info >> [t_upload_customer_research_to_staging, t_upload_user_activity_log_to_staging, t_upload_user_order_log_to_staging]
 
-    get_data_from_api_group
+    download_data_to_staging
