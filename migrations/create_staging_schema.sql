@@ -4,18 +4,11 @@ CREATE TABLE IF NOT EXISTS staging.load_staging_history (
     id BIGSERIAL PRIMARY KEY,
     start_load TIMESTAMP,
     finish_load TIMESTAMP,
+    min_date TIMESTAMP,
+    max_date TIMESTAMP,
     file_name VARCHAR(32),
     status VARCHAR(12) CHECK (status IN ('success', 'in_progress', 'not_found', 'failed')),
     CONSTRAINT load_staging_history_file_name_ukey UNIQUE (file_name)
-);
-
-CREATE TABLE IF NOT EXISTS staging.load_mart_history (
-    id BIGSERIAL PRIMARY KEY,
-    start_load TIMESTAMP,
-    finish_load TIMESTAMP,
-    file_name VARCHAR(30),
-    status VARCHAR(12) CHECK (status IN ('success', 'in_progress', 'failed')),
-    CONSTRAINT load_mart_history_file_name_ukey UNIQUE (file_name)
 );
 
 CREATE TABLE IF NOT EXISTS staging.customer_research (
@@ -57,44 +50,49 @@ CREATE TABLE IF NOT EXISTS staging.user_order_log (
 CREATE INDEX IF NOT EXISTS uol_date_time_ix
     ON staging.user_order_log(date_time);
 
-CREATE OR REPLACE FUNCTION staging.start_staging_load(p_obj_name VARCHAR(30),
-						      OUT batch_id bigint, 
-						      OUT load_status VARCHAR(8)) AS
+CREATE OR REPLACE PROCEDURE staging.start_staging_load(p_file_name VARCHAR(32)) AS
 $$
+INSERT INTO staging.load_staging_history AS lsh
+VALUES (nextval('staging.load_staging_history_id_seq'), current_timestamp, NULL, 
+        NULL, NULL, p_file_name, 'in_progress')
+    ON CONFLICT (file_name)
+    DO UPDATE
+          SET start_load = EXCLUDED.start_load
+            , finish_load = EXCLUDED.finish_load
+            , status = EXCLUDED.status
+        WHERE lsh.file_name = EXCLUDED.file_name;
+$$
+LANGUAGE sql;
+
+CREATE OR REPLACE PROCEDURE staging.drop_staging_file_data(p_file_name VARCHAR(32),
+                              p_obj_name VARCHAR(32), 
+                              p_col_name VARCHAR(64)) AS
+$$
+DECLARE
+  v_min_date TIMESTAMP;
+  v_max_date TIMESTAMP;
 BEGIN
-  SELECT lh.id
-       , lh.status
-    INTO batch_id, load_status
-    FROM staging.load_staging_history lh
-   WHERE lh.file_name = p_obj_name;
+  SELECT lsh.min_date, lsh.max_date
+    INTO v_min_date, v_max_date
+    FROM staging.load_staging_history lsh
+   WHERE lsh.file_name = p_file_name;
 
-  IF batch_id IS NOT NULL AND load_status = 'success' THEN
-     RETURN;
-  END IF;
-
-  IF batch_id IS NULL THEN
-    INSERT INTO staging.load_staging_history(start_load, file_name, status)
-    VALUES (current_timestamp, p_obj_name, 'in_progress') 
-    RETURNING id, status INTO batch_id, load_status;
-
-    RETURN;
-  END IF;
-
-  UPDATE staging.load_staging_history lh
-     SET start_load = current_timestamp
-       , finish_load = NULL
-       , status = 'in_progress'
-   WHERE lh.id = batch_id;
+  EXECUTE FORMAT('DELETE FROM staging.%s WHERE %s BETWEEN $1 AND $2', 
+                 p_obj_name, p_col_name) USING v_min_date, v_max_date;
 END
 $$
 LANGUAGE plpgsql;
 
-CREATE OR REPLACE PROCEDURE staging.finish_staging_load(p_id bigint,
-							p_status VARCHAR(12)) AS
+CREATE OR REPLACE PROCEDURE staging.finish_staging_load(p_file_name VARCHAR(32),
+							p_status VARCHAR(12),
+                            p_min_date timestamp DEFAULT NULL,
+                            p_max_date timestamp DEFAULT NULL) AS
 $$
 UPDATE staging.load_staging_history lh
    SET finish_load = current_timestamp
      , status = p_status
- WHERE lh.id = p_id;
+     , min_date = COALESCE(p_min_date, min_date)
+     , max_date = COALESCE(p_max_date, max_date)
+ WHERE lh.file_name = p_file_name;
 $$
 LANGUAGE sql;

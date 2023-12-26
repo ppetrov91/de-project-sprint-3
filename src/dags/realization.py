@@ -18,10 +18,16 @@ from airflow.providers.postgres.hooks.postgres import PostgresHook
 
 
 def _get_base_url_headers_from_xcom(ti):
+    '''
+    Get headers and base_url from xcom for performing GET and POST requests
+    '''
     return (ti.xcom_pull(key=key, task_ids="get_data_from_api_group.t_get_base_url_and_headers") for key in ("headers", "base_url"))
 
 
 def _get_increment(base_url, headers, report_id, dt):
+    '''
+    Get info about incremental reports from API in a form of JSON and save it to xcom
+    '''
     response = requests.get(f"{base_url}/get_increment?report_id={report_id}&date={dt}T00:00:00", headers=headers)
     response.raise_for_status()
     rc = json.loads(response.content)
@@ -33,42 +39,56 @@ def _get_increment(base_url, headers, report_id, dt):
     return status, None
 
 
-def _check_file_was_uploaded(filename):
+def _start_staging_load(filename):
+    '''
+    Add information in database that data loading has begun
+    '''
     with PostgresHook(postgres_conn_id="postgresql_de").get_conn() as conn:
         with conn.cursor() as cursor:
-            cursor.execute("SELECT * FROM staging.start_staging_load(%s);", (filename,))
-            records = cursor.fetchall()
-
-            '''
-            start_staging_load function always returns one row as file_id and upload_status
-            if file was never uploaded or there was an error then id and "in_progress" status will be returned
-            '''
-            for record in records:
-                if record[1] == 'success':
-                    return record[0], True
-                return record[0], False
+            cursor.execute("CALL staging.start_staging_load(%s);", (filename,))
 
 
-def _update_loading_status(load_id, status):
+def _remove_data_from_prev_runs(file_name, obj_name, dt_col_name):
+    '''
+    Remove data from staging schema while reloading
+    '''
     with PostgresHook(postgres_conn_id="postgresql_de").get_conn() as conn:
         with conn.cursor() as cursor:
-            cursor.execute("CALL staging.finish_staging_load(%s, %s);", (load_id, status)) 
+            cursor.execute("CALL staging.drop_staging_file_data(%s, %s, %s);", (file_name, obj_name, dt_col_name)) 
+
+
+def _finish_staging_load(filename, status, min_date=None, max_date=None):
+    '''
+    Add information in database that data loading has finished.
+    Also update min_date and max_date which were calculated by analyzing pandas dataframe 
+    '''
+    with PostgresHook(postgres_conn_id="postgresql_de").get_conn() as conn:
+        with conn.cursor() as cursor:
+            print(f"filename = {filename}, status={status}")
+            cursor.execute("CALL staging.finish_staging_load(%s, %s, %s, %s);", (filename, status, min_date, max_date)) 
 
 
 def _download_file(ti, key_for_s3_path, key_for_url, staging_folder, filename):
+    '''
+    Download data file from the source system and return local filepath where data was downloaded
+    '''
     s3_path = ti.xcom_pull(key=key_for_s3_path, task_ids="get_data_from_api_group.t_get_report_info")
     url, download_path = s3_path[key_for_url], os.path.join(staging_folder, filename)
 
-    if not os.path.isfile(download_path):
-        response = requests.get(url)
-        response.raise_for_status()
-        with open(download_path, mode="wb") as file:
-            file.write(response.content)
+    response = requests.get(url)
+    response.raise_for_status()
+    with open(download_path, mode="wb") as file:
+        file.write(response.content)
     
     return download_path
 
 
-def _load_data_to_db(object_name, schema_name, download_path, extra_columns, unique_columns, add_columns, load_id):
+def _load_data_to_db(object_name, file_name, schema_name, download_path, extra_columns, unique_columns, add_columns, dt_col_name):
+    '''
+    This function reads data from csv, then remove extra columns and duplicates.
+    Then it adds additional columns such as status in user_order_log if necessary.
+    Then it uploads data to database and mark data loading as finished
+    '''
     # Load data to DataFrame and get rid of extra columns and duplicates
     df = pd.read_csv(download_path)
     df.drop(extra_columns, axis=1, inplace=True)
@@ -80,49 +100,58 @@ def _load_data_to_db(object_name, schema_name, download_path, extra_columns, uni
             df[k] = v
 
     # Load data to db
+    min_date, max_date = df[dt_col_name].min(), df[dt_col_name].max()
     engine = PostgresHook(postgres_conn_id="postgresql_de").get_sqlalchemy_engine()
     row_count = df.to_sql(object_name, engine, schema=schema_name, if_exists="append", index=False)
-    _update_loading_status(load_id, "success")
+    _finish_staging_load(file_name, "success", min_date, max_date)
 
 
-def upload_data_to_staging(ti, object_name, dt, extra_columns, unique_columns, add_columns, schema_name):
+def upload_data_to_staging(ti, object_name, dt, extra_columns, unique_columns, add_columns, schema_name, dt_col_name):
+    '''
+    Main function for uploading data to staging
+    '''
     base_folder = os.path.dirname(conf.get("core", "dags_folder"))
     staging_folder = os.path.join(base_folder, schema_name)
 
     if dt is None or dt == "":
         # We need to upload full report
-        key_for_s3_path, key_for_url, filename = "s3_path", object_name, f"{object_name}.csv"
+        key_for_s3_path, key_for_url, file_name = "s3_path", object_name, f"{object_name}.csv"
     else:
         # We need to upload incremental report 
-        key_for_s3_path, key_for_url, filename = "s3_inc_path", f"{object_name}_inc", f"{object_name}_{dt.replace('-', '_')}.csv"
+        key_for_s3_path, key_for_url, file_name = "s3_inc_path", f"{object_name}_inc", f"{object_name}_{dt.replace('-', '_')}.csv"
 
-    # Check if file has already been uploaded. If so, then exit
-    load_id, was_uploaded = _check_file_was_uploaded(filename)
-    if was_uploaded:
-        return
+    # Get min_date and max_date from previous load if any
+    _start_staging_load(file_name)
 
     # If data was not found then update status in database and exit
     resp_status = ti.xcom_pull(key="resp_status", task_ids="get_data_from_api_group.t_get_report_info")
     if resp_status != "SUCCESS":
-        _update_loading_status(load_id, ("failed", "not_found")[resp_status == "NOT FOUND"])
+        _finish_staging_load(file_name, ("failed", "not_found")[resp_status == "NOT FOUND"])
         return
+
+    # Remove data from previous runs if any
+    _remove_data_from_prev_runs(file_name, object_name, dt_col_name)
 
     # Check if staging_folder exists. If not, create it
     if not os.path.isdir(staging_folder):
         os.mkdir(staging_folder)
 
     # Download file if it is not in staging directory
-    download_path = _download_file(ti, key_for_s3_path, key_for_url, staging_folder, filename)
+    download_path = _download_file(ti, key_for_s3_path, key_for_url, staging_folder, file_name)
 
     # Load data to database
-    _load_data_to_db(object_name, schema_name, download_path, extra_columns, unique_columns, add_columns, load_id)
+    _load_data_to_db(object_name, file_name, schema_name, download_path, extra_columns, unique_columns, add_columns, dt_col_name)
     
 
 def get_report_info(ti, dt=None):
+    '''
+    Get info about report_id and location of main report files
+    '''
+
     # Get headers, base_url and task_id from xcom
     headers, base_url = _get_base_url_headers_from_xcom(ti)
     task_id = ti.xcom_pull(key="task_id", task_ids="get_data_from_api_group.t_create_task_for_report_generation")
-    report_id, api = None, "get_report"
+    report_id, inc_data, api = None, None, "get_report"
     
     '''
     We can request to get_report multiple times since it requires some time to generate files
@@ -160,6 +189,10 @@ def get_report_info(ti, dt=None):
 
 
 def create_task_for_report_generation(ti):
+    '''
+    This function makes a POST-request to create a task for report generation
+    '''
+
     # Get headers and base_url from xcom
     headers, base_url = _get_base_url_headers_from_xcom(ti)
 
@@ -178,6 +211,10 @@ def create_task_for_report_generation(ti):
 
 
 def get_base_url_and_headers(ti):
+    '''
+    Get info about headers and url of the source system
+    '''
+
     # Get information about HTTP-connection via BaseHook
     http_conn_id = BaseHook.get_connection("http_conn_id")
     api_key, base_url = http_conn_id.extra_dejson.get("api_key"), http_conn_id.host
@@ -204,7 +241,7 @@ args = {
 }
 
 
-business_dt = "2023-12-18"
+business_dt = "2023-12-23"
 staging_schema = "staging"
 
 with DAG(dag_id="sales_mart",
@@ -235,7 +272,8 @@ with DAG(dag_id="sales_mart",
                                                                    "extra_columns": [],
                                                                    "unique_columns": ["date_id", "category_id", "geo_id"],
                                                                    "add_columns": {},
-                                                                   "schema_name":  staging_schema
+                                                                   "schema_name":  staging_schema,
+                                                                   "dt_col_name": "date_id"
                                                                }
                                                               )
 
@@ -247,7 +285,8 @@ with DAG(dag_id="sales_mart",
                                                                    "extra_columns": ["id"],
                                                                    "unique_columns": ["uniq_id"],
                                                                    "add_columns": {},
-                                                                   "schema_name":  staging_schema
+                                                                   "schema_name":  staging_schema,
+                                                                   "dt_col_name": "date_time"
                                                                }
                                                               )
 
@@ -259,7 +298,8 @@ with DAG(dag_id="sales_mart",
                                                                    "extra_columns": ["id"],
                                                                    "unique_columns": ["uniq_id"],
                                                                    "add_columns": {"status": "shipped"},
-                                                                   "schema_name":  staging_schema
+                                                                   "schema_name":  staging_schema,
+                                                                   "dt_col_name": "date_time"
                                                             }
                                                            )
 

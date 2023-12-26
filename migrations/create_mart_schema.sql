@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS mart.d_customer (
 	customer_id int not null UNIQUE,
 	first_name varchar(15),
 	last_name varchar(15),
-	city_id int,
+    city_id int,
 	CONSTRAINT d_customer_city_id_fkey FOREIGN KEY (city_id) REFERENCES mart.d_city(id)
 );
 
