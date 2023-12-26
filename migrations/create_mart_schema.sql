@@ -306,27 +306,29 @@ LANGUAGE plpgsql;
 CREATE OR REPLACE PROCEDURE mart.update_f_activity(p_dt1 timestamp, p_dt2 timestamp)
 AS
 $$
-BEGIN
+DECLARE
+  v_dt1 int := TO_CHAR(p_dt1, 'YYYYMMDD')::int;
+  v_dt2 int := TO_CHAR(p_dt2, 'YYYYMMDD')::int;
+BEGIN 
   /*
    * Clear data before recalculation
    */
   DELETE
     FROM mart.f_activity f
-   WHERE EXISTS (SELECT 1
-                   FROM mart.d_calendar d
-                  WHERE d.date_id = f.date_id
-                    AND d.date_actual BETWEEN p_dt1::date AND p_dt2::date
-                );
+   WHERE f.date_id BETWEEN v_dt1 AND v_dt2;
 
   INSERT INTO mart.f_activity(action_id, date_id, customer_id, quantity)
   SELECT ual.action_id
        , cl.date_id
-       , ual.customer_id
+       , cs.customer_id AS customer_id
        , MAX(ual.quantity) AS quantity
     FROM staging.user_activity_log ual
     LEFT JOIN mart.d_calendar cl
       ON cl.date_actual = ual.date_time::date
-   WHERE ual.date_time BETWEEN p_dt1 AND p_dt2;
+    LEFT JOIN mart.d_customer cs
+      ON cs.customer_id = ual.customer_id  
+   WHERE ual.date_time BETWEEN p_dt1 AND p_dt2
+   GROUP BY ual.action_id, cl.date_id, cs.customer_id;
 
   ANALYZE mart.f_activity;
 END
@@ -336,23 +338,22 @@ LANGUAGE plpgsql;
 CREATE OR REPLACE PROCEDURE mart.update_f_sales(p_dt1 timestamp, p_dt2 timestamp)
 AS
 $$
+DECLARE
+  v_dt1 int := TO_CHAR(p_dt1, 'YYYYMMDD')::int;
+  v_dt2 int := TO_CHAR(p_dt2, 'YYYYMMDD')::int;
 BEGIN
   /*
    * Clear data before recalculation
    */
   DELETE
     FROM mart.f_sales f
-   WHERE EXISTS (SELECT 1
-                   FROM mart.d_calendar d
-                  WHERE d.date_id = f.date_id
-                    AND d.date_actual BETWEEN p_dt1::date AND p_dt2::date
-                );
-                 
+   WHERE f.date_id BETWEEN v_dt1 AND v_dt2;
+
   INSERT INTO mart.f_sales(date_id, item_id, customer_id, city_id, quantity, payment_amount, status)
   SELECT cl.date_id
-       , uol.item_id
-       , uol.customer_id
-       , uol.city_id
+       , i.item_id
+       , cs.customer_id
+       , ct.city_id
        , uol.quantity
 
        , CASE 
@@ -364,6 +365,12 @@ BEGIN
     FROM staging.user_order_log uol
     LEFT JOIN mart.d_calendar cl
       ON cl.date_actual = uol.date_time::date
+    LEFT JOIN mart.d_item i
+      ON i.item_id = uol.item_id  
+    LEFT JOIN mart.d_customer cs
+      ON cs.customer_id = uol.customer_id
+    LEFT JOIN mart.d_city ct
+      ON ct.city_id = uol.city_id  
    WHERE uol.date_time BETWEEN p_dt1 AND p_dt2;
 
   ANALYZE mart.f_sales;
