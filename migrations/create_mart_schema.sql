@@ -379,7 +379,9 @@ $$
 LANGUAGE plpgsql;
 
 CREATE OR REPLACE FUNCTION mart.get_staging_load_dates_status(p_file_dt VARCHAR(10),
-                           OUT p_dt1 timestamp, OUT p_dt2 timestamp, OUT p_is_success int)
+                                                              OUT p_dt1 timestamp, 
+							      OUT p_dt2 timestamp, 
+							      OUT p_is_success int)
 AS
 $$
 DECLARE
