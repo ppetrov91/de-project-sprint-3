@@ -108,7 +108,7 @@ CREATE INDEX IF NOT EXISTS f_sales_customer_id_ix
 CREATE INDEX IF NOT EXISTS f_sales_city_id_ix 
     ON mart.f_sales(city_id);
 
-CREATE OR REPLACE PROCEDURE mart.update_d_city(p_dt1 timestamp, p_dt2 timestamp)
+CREATE OR REPLACE PROCEDURE mart.update_d_city(p_dt1 text, p_dt2 text)
 AS
 $$
 BEGIN
@@ -122,7 +122,7 @@ BEGIN
        , uol.date_time
        , ROW_NUMBER() OVER(PARTITION BY uol.city_id ORDER BY uol.date_time DESC) AS rn
     FROM staging.user_order_log uol
-   WHERE uol.date_time BETWEEN p_dt1 AND p_dt2
+   WHERE uol.date_time BETWEEN p_dt1::timestamp AND p_dt2::timestamp
   )
   INSERT INTO mart.d_city AS c
   SELECT nextval('mart.d_city_id_seq') AS id
@@ -147,7 +147,7 @@ END
 $$
 LANGUAGE plpgsql;
 
-CREATE OR REPLACE PROCEDURE mart.update_d_item(p_dt1 timestamp, p_dt2 timestamp)
+CREATE OR REPLACE PROCEDURE mart.update_d_item(p_dt1 text, p_dt2 text)
 AS
 $$
 BEGIN
@@ -161,7 +161,7 @@ BEGIN
        , uol.date_time
        , ROW_NUMBER() OVER(PARTITION BY uol.item_id ORDER BY uol.date_time DESC) AS rn
     FROM staging.user_order_log uol
-   WHERE uol.date_time BETWEEN p_dt1 AND p_dt2
+   WHERE uol.date_time BETWEEN p_dt1::timestamp AND p_dt2::timestamp
   )
   INSERT INTO mart.d_item AS c
   SELECT nextval('mart.d_item_id_seq') AS id
@@ -186,7 +186,7 @@ END
 $$
 LANGUAGE plpgsql;
 
-CREATE OR REPLACE PROCEDURE mart.update_d_customer(p_dt1 timestamp, p_dt2 timestamp)
+CREATE OR REPLACE PROCEDURE mart.update_d_customer(p_dt1 text, p_dt2 text)
 AS
 $$
 BEGIN
@@ -202,7 +202,7 @@ BEGIN
        , uol.date_time
        , ROW_NUMBER() OVER(PARTITION BY uol.customer_id ORDER BY uol.date_time DESC) AS rn
     FROM staging.user_order_log uol
-   WHERE uol.date_time BETWEEN p_dt1 AND p_dt2
+   WHERE uol.date_time BETWEEN p_dt1::timestamp AND p_dt2::timestamp
   )
   INSERT INTO mart.d_customer AS c
   SELECT nextval('mart.d_customer_id_seq') AS id
@@ -236,7 +236,7 @@ END
 $$
 LANGUAGE plpgsql;
 
-CREATE OR REPLACE PROCEDURE mart.update_d_calendar(p_dt1 timestamp, p_dt2 timestamp)
+CREATE OR REPLACE PROCEDURE mart.update_d_calendar(p_dt1 text, p_dt2 text)
 AS
 $$
 BEGIN
@@ -244,19 +244,19 @@ BEGIN
   WITH ds AS (
   SELECT cr.date_id::date AS dt
     FROM staging.customer_research cr
-   WHERE cr.date_id BETWEEN p_dt1 AND p_dt2
+   WHERE cr.date_id BETWEEN p_dt1::timestamp AND p_dt2::timestamp
 
    UNION
 
   SELECT uol.date_time::date
     FROM staging.user_order_log uol
-   WHERE uol.date_time BETWEEN p_dt1 AND p_dt2
+   WHERE uol.date_time BETWEEN p_dt1::timestamp AND p_dt2::timestamp
 
    UNION
 
   SELECT ual.date_time::date
     FROM staging.user_activity_log ual
-   WHERE ual.date_time BETWEEN p_dt1 AND p_dt2
+   WHERE ual.date_time BETWEEN p_dt1::timestamp AND p_dt2::timestamp
   )
   INSERT INTO mart.d_calendar
   SELECT REPLACE(c.dt::text, '-', '')::int AS date_id
@@ -303,12 +303,12 @@ END
 $$
 LANGUAGE plpgsql;
 
-CREATE OR REPLACE PROCEDURE mart.update_f_activity(p_dt1 timestamp, p_dt2 timestamp)
+CREATE OR REPLACE PROCEDURE mart.update_f_activity(p_dt1 text, p_dt2 text)
 AS
 $$
 DECLARE
-  v_dt1 int := TO_CHAR(p_dt1, 'YYYYMMDD')::int;
-  v_dt2 int := TO_CHAR(p_dt2, 'YYYYMMDD')::int;
+  v_dt1 int := TO_CHAR(p_dt1::timestamp, 'YYYYMMDD')::int;
+  v_dt2 int := TO_CHAR(p_dt2::timestamp, 'YYYYMMDD')::int;
 BEGIN 
   /*
    * Clear data before recalculation
@@ -327,7 +327,7 @@ BEGIN
       ON cl.date_actual = ual.date_time::date
     LEFT JOIN mart.d_customer cs
       ON cs.customer_id = ual.customer_id  
-   WHERE ual.date_time BETWEEN p_dt1 AND p_dt2
+   WHERE ual.date_time BETWEEN p_dt1::timestamp AND p_dt2::timestamp
    GROUP BY ual.action_id, cl.date_id, cs.customer_id;
 
   ANALYZE mart.f_activity;
@@ -335,12 +335,12 @@ END
 $$
 LANGUAGE plpgsql;
 
-CREATE OR REPLACE PROCEDURE mart.update_f_sales(p_dt1 timestamp, p_dt2 timestamp)
+CREATE OR REPLACE PROCEDURE mart.update_f_sales(p_dt1 text, p_dt2 text)
 AS
 $$
 DECLARE
-  v_dt1 int := TO_CHAR(p_dt1, 'YYYYMMDD')::int;
-  v_dt2 int := TO_CHAR(p_dt2, 'YYYYMMDD')::int;
+  v_dt1 int := TO_CHAR(p_dt1::timestamp, 'YYYYMMDD')::int;
+  v_dt2 int := TO_CHAR(p_dt2::timestamp, 'YYYYMMDD')::int;
 BEGIN
   /*
    * Clear data before recalculation
@@ -371,7 +371,7 @@ BEGIN
       ON cs.customer_id = uol.customer_id
     LEFT JOIN mart.d_city ct
       ON ct.city_id = uol.city_id  
-   WHERE uol.date_time BETWEEN p_dt1 AND p_dt2;
+   WHERE uol.date_time BETWEEN p_dt1::timestamp AND p_dt2::timestamp;
 
   ANALYZE mart.f_sales;
 END
@@ -379,8 +379,8 @@ $$
 LANGUAGE plpgsql;
 
 CREATE OR REPLACE FUNCTION mart.get_staging_load_dates_status(p_file_dt VARCHAR(10),
-                                                              OUT p_dt1 timestamp, 
-							      OUT p_dt2 timestamp, 
+                                                              OUT p_dt1 text, 
+							      OUT p_dt2 text, 
 							      OUT p_is_success int)
 AS
 $$

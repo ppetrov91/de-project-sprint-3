@@ -13,6 +13,8 @@ from airflow.models import Variable
 from airflow.utils.task_group import TaskGroup
 from airflow.operators.empty import EmptyOperator
 from airflow.operators.python import PythonOperator
+from airflow.operators.python import BranchPythonOperator
+from airflow.providers.postgres.operators.postgres import PostgresOperator
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 
 
@@ -38,13 +40,13 @@ def _get_increment(base_url, headers, report_id, dt):
     return status, None
 
 
-def _start_staging_load(filename):
+def _start_staging_load(dt, filename):
     '''
     Add information in database that data loading has begun
     '''
     with PostgresHook(postgres_conn_id="postgresql_de").get_conn() as conn:
         with conn.cursor() as cursor:
-            cursor.execute("CALL staging.start_staging_load(%s);", (filename,))
+            cursor.execute("CALL staging.start_staging_load(%s, %s);", (dt, filename))
 
 
 def _remove_data_from_prev_runs(file_name, obj_name, dt_col_name):
@@ -63,7 +65,6 @@ def _finish_staging_load(filename, status, min_date=None, max_date=None):
     '''
     with PostgresHook(postgres_conn_id="postgresql_de").get_conn() as conn:
         with conn.cursor() as cursor:
-            print(f"filename = {filename}, status={status}")
             cursor.execute("CALL staging.finish_staging_load(%s, %s, %s, %s);", (filename, status, min_date, max_date)) 
 
 
@@ -120,7 +121,7 @@ def upload_data_to_staging(ti, object_name, dt, extra_columns, unique_columns, a
         key_for_s3_path, key_for_url, file_name = "s3_inc_path", f"{object_name}_inc", f"{object_name}_{dt.replace('-', '_')}.csv"
 
     # Get min_date and max_date from previous load if any
-    _start_staging_load(file_name)
+    _start_staging_load(dt, file_name)
 
     # If data was not found then update status in database and exit
     resp_status = ti.xcom_pull(key="resp_status", task_ids="download_data_to_staging.t_get_report_info")
@@ -140,7 +141,7 @@ def upload_data_to_staging(ti, object_name, dt, extra_columns, unique_columns, a
 
     # Load data to database
     _load_data_to_db(object_name, file_name, schema_name, download_path, extra_columns, unique_columns, add_columns, dt_col_name)
-    
+
 
 def get_report_info(ti, dt=None):
     '''
@@ -231,6 +232,33 @@ def get_base_url_and_headers(ti):
     ti.xcom_push(key="base_url", value=base_url)
 
 
+def get_load_staging_status(ti, dt):
+    '''
+    Decided whether mart update is possible 
+    '''
+    with PostgresHook(postgres_conn_id="postgresql_de").get_conn() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT * FROM mart.get_staging_load_dates_status(%s);", (dt,))
+
+            for row in cursor.fetchall():
+                if row[2] == 0:
+                    return "finish"
+
+    ti.xcom_push(key="dt1", value=row[0])
+    ti.xcom_push(key="dt2", value=row[1])
+    return "update_mart"
+
+
+def update_mart_data(ti, proc_name):
+    '''
+    Refresh tables data in mart 
+    '''
+    dt1, dt2 = (ti.xcom_pull(key=key, task_ids="get_load_staging_status") for key in ("dt1", "dt2"))
+    with PostgresHook(postgres_conn_id="postgresql_de").get_conn() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(f"CALL mart.{proc_name}(%s, %s);", (dt1, dt2))
+
+
 args = {
     "owner": "airflow",
     "email": ["airflow@example.com"],
@@ -240,7 +268,7 @@ args = {
 }
 
 
-business_dt = "2023-12-19"
+business_dt = "2023-12-25"
 staging_schema = "staging"
 
 with DAG(dag_id="sales_mart",
@@ -305,4 +333,22 @@ with DAG(dag_id="sales_mart",
         t_get_base_url_and_headers >> t_create_task_for_report_generation >> t_get_report_info
         t_get_report_info >> [t_upload_customer_research_to_staging, t_upload_user_activity_log_to_staging, t_upload_user_order_log_to_staging]
 
-    download_data_to_staging
+    with TaskGroup("update_mart_group") as update_mart_group:
+        l = [PythonOperator(task_id=v, 
+                            python_callable=update_mart_data,
+                            op_kwargs={'proc_name': v}) 
+                            for v in ('update_d_city', 'update_d_item', 'update_d_customer', 
+                                      'update_d_calendar', 'update_f_activity', 'update_f_sales')]
+        
+        [l[0], l[1], l[3]] >> l[2] >> [l[-2], l[-1]]
+    
+    t_get_load_staging_status = BranchPythonOperator(task_id='get_load_staging_status', 
+                                                     python_callable=get_load_staging_status,
+                                                     op_kwargs={"dt": business_dt})
+
+    t_finish = EmptyOperator(task_id="finish")
+    t_update_mart = EmptyOperator(task_id="update_mart")
+
+    download_data_to_staging >> t_get_load_staging_status
+    t_get_load_staging_status >> [t_update_mart, t_finish]
+    t_update_mart >> update_mart_group >> t_finish
