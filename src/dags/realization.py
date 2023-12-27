@@ -268,7 +268,7 @@ args = {
 }
 
 
-business_dt = "2023-12-25"
+business_dt = "2023-12-24"
 staging_schema = "staging"
 
 with DAG(dag_id="sales_mart",
@@ -338,9 +338,16 @@ with DAG(dag_id="sales_mart",
                             python_callable=update_mart_data,
                             op_kwargs={'proc_name': v}) 
                             for v in ('update_d_city', 'update_d_item', 'update_d_customer', 
-                                      'update_d_calendar', 'update_f_activity', 'update_f_sales')]
+                                      'update_d_calendar', 'update_f_activity', 'update_f_sales',
+                                      'update_f_customer_retention')]
         
-        [l[0], l[1], l[3]] >> l[2] >> [l[-2], l[-1]]
+        '''
+        update_d_city, update_d_item and update_d_calendar are processed independently
+        then update_d_customer is processed since d_customer depends on d_city
+        then f_activity and f_sales are updated
+        At last, f_customer retention is processed since it depends on f_sales
+        '''
+        [l[0], l[1], l[3]] >> l[2] >> [l[-3], l[-2]] >> l[-1]
     
     t_get_load_staging_status = BranchPythonOperator(task_id='get_load_staging_status', 
                                                      python_callable=get_load_staging_status,
