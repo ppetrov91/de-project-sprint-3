@@ -108,6 +108,50 @@ CREATE INDEX IF NOT EXISTS f_sales_customer_id_ix
 CREATE INDEX IF NOT EXISTS f_sales_city_id_ix 
     ON mart.f_sales(city_id);
 
+CREATE TABLE IF NOT EXISTS mart.f_customer_retention (
+    new_customers_count bigint,
+    returning_customers_count bigint,
+    refunded_customer_count bigint,
+    period_name text,
+    period_id int,
+    item_id int,
+    new_customers_revenue numeric(10,2),
+    returning_customers_revenue numeric(10,2),
+    customers_refunded bigint,
+    CONSTRAINT f_customer_retention_pk PRIMARY KEY(period_id, item_id),
+    CONSTRAINT f_customer_retention_item_id_fk FOREIGN KEY(item_id) REFERENCES mart.d_item(item_id)
+);
+
+CREATE INDEX IF NOT EXISTS f_customer_retention_item_id_ix
+    ON mart.f_customer_retention(item_id);
+
+CREATE OR REPLACE FUNCTION mart.get_staging_load_dates_status(p_file_dt VARCHAR(10),
+                                                              OUT p_dt1 text, 
+                                  OUT p_dt2 text, 
+                                  OUT p_is_success int)
+AS
+$$
+DECLARE
+  v_dt timestamp := COALESCE(NULLIF(TRIM(p_file_dt), '')::timestamp, '0001-01-01'::timestamp);
+  v_non_success_cnt int;
+BEGIN
+  SELECT MIN(lsh.min_date) AS min_date
+       , MAX(lsh.max_date) AS max_date
+       , COUNT(1) FILTER(WHERE lsh.status != 'success') AS non_success_cnt
+    INTO p_dt1, p_dt2, v_non_success_cnt   
+    FROM staging.load_staging_history lsh
+   WHERE lsh.file_dt = v_dt;
+
+   IF p_dt1 IS NULL OR v_non_success_cnt > 0 THEN
+     p_is_success := 0;
+     RETURN;
+   END IF;
+
+   p_is_success := 1;
+END
+$$
+LANGUAGE plpgsql;
+
 CREATE OR REPLACE PROCEDURE mart.update_d_city(p_dt1 text, p_dt2 text)
 AS
 $$
@@ -361,7 +405,7 @@ BEGIN
        	   ELSE -1 
        	 END * uol.payment_amount AS payment_amount
 
-       , uol.status
+       , COALESCE(uol.status, 'shipped') AS status
     FROM staging.user_order_log uol
     LEFT JOIN mart.d_calendar cl
       ON cl.date_actual = uol.date_time::date
@@ -378,29 +422,64 @@ END
 $$
 LANGUAGE plpgsql;
 
-CREATE OR REPLACE FUNCTION mart.get_staging_load_dates_status(p_file_dt VARCHAR(10),
-                                                              OUT p_dt1 text, 
-							      OUT p_dt2 text, 
-							      OUT p_is_success int)
+CREATE OR REPLACE PROCEDURE mart.update_f_customer_retention(p_dt1 text, p_dt2 text)
 AS
 $$
 DECLARE
-  v_dt timestamp := COALESCE(NULLIF(TRIM(p_file_dt), '')::timestamp, '0001-01-01'::timestamp);
-  v_non_success_cnt int;
+  v_week1 int := TO_CHAR(p_dt1::timestamp, 'WW')::int;
+  v_week2 int := TO_CHAR(p_dt2::timestamp, 'WW')::int;
 BEGIN
-  SELECT MIN(lsh.min_date) AS min_date
-       , MAX(lsh.max_date) AS max_date
-       , COUNT(1) FILTER(WHERE lsh.status != 'success') AS non_success_cnt
-    INTO p_dt1, p_dt2, v_non_success_cnt   
-    FROM staging.load_staging_history lsh
-   WHERE lsh.file_dt = v_dt;
+  /*
+   * Clear data before recalculation
+   */
+  DELETE
+    FROM mart.f_customer_retention f
+   WHERE f.period_id BETWEEN v_week1 AND v_week2;
 
-   IF p_dt1 IS NULL OR v_non_success_cnt > 0 THEN
-     p_is_success := 0;
-     RETURN;
-   END IF;
+  WITH sales AS (
+  SELECT d.week_of_year AS period_id
+       , f.customer_id
+       , f.item_id
+       , f.payment_amount
+       , f.status
+    FROM mart.f_sales f
+    JOIN mart.d_calendar d
+      ON d.date_id = f.date_id
+   WHERE d.week_of_year BETWEEN v_week1 AND v_week2    
+  ),
+  customers_sales AS (
+  SELECT s.period_id
+       , s.customer_id
+       , COUNT(1) AS sales_cnt
+    FROM sales s
+   WHERE s.status = 'shipped'
+   GROUP BY s.period_id, s.customer_id
+  )
+  INSERT INTO mart.f_customer_retention
+  SELECT COUNT(DISTINCT s.customer_id) FILTER(WHERE s.status = 'shipped' 
+                                                AND nc.sales_cnt = 1) AS new_customers_count
+       , COUNT(DISTINCT s.customer_id) FILTER(WHERE s.status = 'shipped' 
+                                                AND nc.sales_cnt > 1) AS returning_customers_count
+       , COUNT(DISTINCT s.customer_id) FILTER(WHERE s.status = 'refunded') AS refunded_customer_count
+  
+       , 'weekly' AS period_name
+       , s.period_id
+       , s.item_id
 
-   p_is_success := 1;
+       , SUM(s.payment_amount) FILTER(WHERE s.status = 'shipped' 
+                                        AND nc.sales_cnt = 1) AS new_customers_revenue
+       
+       , SUM(s.payment_amount) FILTER(WHERE s.status = 'shipped' 
+                                        AND nc.sales_cnt > 1) AS returning_customers_revenue
+
+       , COUNT(1) FILTER(WHERE s.status = 'refunded') AS customers_refunded
+    FROM sales s
+    LEFT JOIN customers_sales nc
+      ON nc.customer_id = s.customer_id
+     AND nc.period_id = s.period_id 
+   GROUP BY s.period_id, s.item_id;
+
+   ANALYZE mart.f_customer_retention;
 END
 $$
 LANGUAGE plpgsql;
