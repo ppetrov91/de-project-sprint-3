@@ -275,6 +275,12 @@ BEGIN
                   c.updated_at < EXCLUDED.created_at
                 );
 
+   INSERT INTO mart.d_customer(customer_id)
+   SELECT DISTINCT ual.customer_id
+     FROM staging.user_activity_log ual
+    WHERE ual.date_time BETWEEN p_dt1::timestamp AND p_dt2::timestamp
+       ON CONFLICT (customer_id) DO NOTHING;
+
    ANALYZE mart.d_customer;
 END
 $$
