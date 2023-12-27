@@ -268,7 +268,7 @@ args = {
 }
 
 
-business_dt = "2023-12-24"
+business_dt = "{{ds}}"
 staging_schema = "staging"
 
 with DAG(dag_id="sales_mart",
